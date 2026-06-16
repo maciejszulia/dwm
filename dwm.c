@@ -59,7 +59,7 @@
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
-enum { SchemeNorm, SchemeSel }; /* color schemes */
+enum { SchemeNorm, SchemeSel, SchemeWarn }; /* color schemes */
 enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
        NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
@@ -712,9 +712,25 @@ drawbar(Monitor *m)
 
 	/* draw status first so it can be overdrawn by tags later */
 	if (m == selmon) { /* status is only drawn on selected monitor */
+		char *p, *seg;
+		char ctmp;
+		int xpos;
 		drw_setscheme(drw, scheme[SchemeNorm]);
 		tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
-		drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
+		xpos = m->ww - tw;
+		seg = stext;
+		for (p = stext; ; p++) {
+			if (*p == '\0' || ((unsigned char)*p >= 1 && (unsigned char)*p <= LENGTH(colors))) {
+				ctmp = *p;
+				*p = '\0';
+				drw_text(drw, xpos, 0, ctmp == '\0' ? m->ww - xpos : TEXTW(seg) - lrpad, bh, 0, seg, 0);
+				xpos += TEXTW(seg) - lrpad;
+				*p = ctmp;
+				if (!ctmp) break;
+				drw_setscheme(drw, scheme[(unsigned char)*p - 1]);
+				seg = p + 1;
+			}
+		}
 	}
 
 	for (c = m->clients; c; c = c->next) {
