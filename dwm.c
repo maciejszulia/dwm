@@ -56,10 +56,11 @@
 #define HEIGHT(X)               ((X)->h + 2 * (X)->bw)
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
+#define STATUSSEP               '\037' /* dwmblocks: text before it shows on hover only */
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
-enum { SchemeNorm, SchemeSel, SchemeWarn }; /* color schemes */
+enum { SchemeNorm, SchemeSel, SchemeWarn, SchemeDim, SchemeCaut }; /* color schemes */
 enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
        NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
@@ -178,6 +179,7 @@ static void grabkeys(void);
 static void incnmaster(const Arg *arg);
 static void keypress(XEvent *e);
 static void killclient(const Arg *arg);
+static void leavenotify(XEvent *e);
 static void manage(Window w, XWindowAttributes *wa);
 static void mappingnotify(XEvent *e);
 static void maprequest(XEvent *e);
@@ -193,7 +195,9 @@ static void resize(Client *c, int x, int y, int w, int h, int interact);
 static void resizeclient(Client *c, int x, int y, int w, int h);
 static void resizemouse(const Arg *arg);
 static void restack(Monitor *m);
+static void restoretags(Client *c);
 static void run(void);
+static void savetags(Client *c);
 static void scan(void);
 static int sendevent(Client *c, Atom proto);
 static void sendmon(Client *c, Monitor *m);
@@ -201,13 +205,17 @@ static void setclientstate(Client *c, long state);
 static void setfocus(Client *c);
 static void setfullscreen(Client *c, int fullscreen);
 static void setlayout(const Arg *arg);
+static void settile50(const Arg *arg);
 static void setmfact(const Arg *arg);
+static void setstext(void);
 static void sighup(int unused);
 static void sigterm(int unused);
 static void setup(void);
 static void seturgent(Client *c, int urg);
+static void shiftview(const Arg *arg);
 static void showhide(Client *c);
 static void spawn(const Arg *arg);
+static int statuswidth(char *s);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
 static void tile(Monitor *m);
@@ -238,7 +246,9 @@ static void zoom(const Arg *arg);
 
 /* variables */
 static const char broken[] = "broken";
-static char stext[256];
+static char rawstext[512]; /* status text as published by dwmblocks */
+static char stext[512];    /* the variant currently drawn on the bar */
+static int statushover;
 static int screen;
 static int sw, sh;           /* X display screen geometry width, height */
 static int bh;               /* bar height */
@@ -255,6 +265,7 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[Expose] = expose,
 	[FocusIn] = focusin,
 	[KeyPress] = keypress,
+	[LeaveNotify] = leavenotify,
 	[MappingNotify] = mappingnotify,
 	[MapRequest] = maprequest,
 	[MotionNotify] = motionnotify,
@@ -262,6 +273,7 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[UnmapNotify] = unmapnotify
 };
 static Atom wmatom[WMLast], netatom[NetLast];
+static Atom dwmtags;
 static int restart = 0;
 static int running = 1;
 static Cur *cursor[CurLast];
@@ -421,7 +433,7 @@ attachstack(Client *c)
 void
 buttonpress(XEvent *e)
 {
-	unsigned int i, x, click;
+	unsigned int i, x, click, occ = 0;
 	Arg arg = {0};
 	Client *c;
 	Monitor *m;
@@ -436,15 +448,20 @@ buttonpress(XEvent *e)
 	}
 	if (ev->window == selmon->barwin) {
 		i = x = 0;
-		do
+		for (c = selmon->clients; c; c = c->next)
+			occ |= c->tags;
+		do {
+			/* skip the tags drawbar did not draw */
+			if (!(occ & 1 << i || selmon->tagset[selmon->seltags] & 1 << i))
+				continue;
 			x += TEXTW(tags[i]);
-		while (ev->x >= x && ++i < LENGTH(tags));
+		} while (ev->x >= x && ++i < LENGTH(tags));
 		if (i < LENGTH(tags)) {
 			click = ClkTagBar;
 			arg.ui = 1 << i;
 		} else if (ev->x < x + TEXTW(selmon->ltsymbol))
 			click = ClkLtSymbol;
-		else if (ev->x > selmon->ww - (int)TEXTW(stext) + lrpad - 2)
+		else if (ev->x > selmon->ww - statuswidth(stext) - 2)
 			click = ClkStatusText;
 		else
 			click = ClkWinTitle;
@@ -716,7 +733,7 @@ drawbar(Monitor *m)
 		char ctmp;
 		int xpos;
 		drw_setscheme(drw, scheme[SchemeNorm]);
-		tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
+		tw = statuswidth(stext) + 2; /* 2px right padding */
 		xpos = m->ww - tw;
 		seg = stext;
 		for (p = stext; ; p++) {
@@ -740,13 +757,12 @@ drawbar(Monitor *m)
 	}
 	x = 0;
 	for (i = 0; i < LENGTH(tags); i++) {
+		/* vacant tags take no room on the bar */
+		if (!(occ & 1 << i || m->tagset[m->seltags] & 1 << i))
+			continue;
 		w = TEXTW(tags[i]);
 		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
 		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
-		if (occ & 1 << i)
-			drw_rect(drw, x + boxs, boxs, boxw, boxw,
-				m == selmon && selmon->sel && selmon->sel->tags & 1 << i,
-				urg & 1 << i);
 		x += w;
 	}
 	w = TEXTW(m->ltsymbol);
@@ -1049,6 +1065,17 @@ killclient(const Arg *arg)
 }
 
 void
+leavenotify(XEvent *e)
+{
+	/* root selects LeaveWindowMask too, so the bar check is required */
+	if (e->xcrossing.window == selmon->barwin && statushover) {
+		statushover = 0;
+		setstext();
+		drawbar(selmon);
+	}
+}
+
+void
 manage(Window w, XWindowAttributes *wa)
 {
 	Client *c, *t = NULL;
@@ -1072,6 +1099,8 @@ manage(Window w, XWindowAttributes *wa)
 		c->mon = selmon;
 		applyrules(c);
 	}
+	restoretags(c);
+	savetags(c);
 
 	if (c->x + WIDTH(c) > c->mon->wx + c->mon->ww)
 		c->x = c->mon->wx + c->mon->ww - WIDTH(c);
@@ -1152,6 +1181,17 @@ motionnotify(XEvent *e)
 	Monitor *m;
 	XMotionEvent *ev = &e->xmotion;
 
+	if (ev->window == selmon->barwin) {
+		/* same status region test as buttonpress()/drawbar() */
+		int over = ev->x > selmon->ww - statuswidth(stext) - 2;
+
+		if (over != statushover) {
+			statushover = over;
+			setstext();
+			drawbar(selmon);
+		}
+		return;
+	}
 	if (ev->window != root)
 		return;
 	if ((m = recttomon(ev->x_root, ev->y_root, 1, 1)) != mon && mon) {
@@ -1401,6 +1441,25 @@ restack(Monitor *m)
 }
 
 void
+restoretags(Client *c)
+{
+	unsigned long n, extra;
+	unsigned char *p = NULL;
+	Atom real;
+	int format;
+
+	/* a dwm restart re-manages every live window: put it back where it was */
+	if (XGetWindowProperty(dpy, c->win, dwmtags, 0L, 1L, False, XA_CARDINAL,
+			&real, &format, &n, &extra, &p) != Success)
+		return;
+	if (p) {
+		if (n == 1 && (*(long *)p & TAGMASK))
+			c->tags = *(long *)p & TAGMASK;
+		XFree(p);
+	}
+}
+
+void
 run(void)
 {
 	XEvent ev;
@@ -1409,6 +1468,15 @@ run(void)
 	while (running && !XNextEvent(dpy, &ev))
 		if (handler[ev.type])
 			handler[ev.type](&ev); /* call handler */
+}
+
+void
+savetags(Client *c)
+{
+	long tags = c->tags; /* format 32 properties are read as long by Xlib */
+
+	XChangeProperty(dpy, c->win, dwmtags, XA_CARDINAL, 32,
+		PropModeReplace, (unsigned char *)&tags, 1);
 }
 
 void
@@ -1542,6 +1610,15 @@ setlayout(const Arg *arg)
 		drawbar(selmon);
 }
 
+void
+settile50(const Arg *arg)
+{
+	(void)arg;
+	selmon->nmaster = 1;
+	selmon->mfact = 0.50;
+	setlayout(&(Arg){.v = &layouts[0]});
+}
+
 /* arg > 1.0 will set mfact absolutely */
 void
 setmfact(const Arg *arg)
@@ -1555,6 +1632,20 @@ setmfact(const Arg *arg)
 		return;
 	selmon->mfact = f;
 	arrange(selmon);
+}
+
+void
+setstext(void)
+{
+	char *sep = strchr(rawstext, STATUSSEP);
+
+	if (!sep)
+		strncpy(stext, rawstext, sizeof stext - 1);
+	else if (statushover)
+		snprintf(stext, sizeof stext, "%.*s%s", (int)(sep - rawstext), rawstext, sep + 1);
+	else
+		strncpy(stext, sep + 1, sizeof stext - 1);
+	stext[sizeof stext - 1] = '\0';
 }
 
 void
@@ -1586,10 +1677,11 @@ setup(void)
 	if (!drw_fontset_create(drw, fonts, LENGTH(fonts)))
 		die("no fonts could be loaded.");
 	lrpad = drw->fonts->h;
-	bh = drw->fonts->h + 2;
+	bh = drw->fonts->h + barheightpx;
 	updategeom();
 	/* init atoms */
 	utf8string = XInternAtom(dpy, "UTF8_STRING", False);
+	dwmtags = XInternAtom(dpy, "_DWM_TAGS", False);
 	wmatom[WMProtocols] = XInternAtom(dpy, "WM_PROTOCOLS", False);
 	wmatom[WMDelete] = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
 	wmatom[WMState] = XInternAtom(dpy, "WM_STATE", False);
@@ -1651,6 +1743,21 @@ seturgent(Client *c, int urg)
 }
 
 void
+shiftview(const Arg *arg)
+{
+	Arg shifted;
+
+	/* circular shift; view() masks with TAGMASK, so both ends wrap on their own */
+	if (arg->i > 0)
+		shifted.ui = (selmon->tagset[selmon->seltags] << arg->i)
+			| (selmon->tagset[selmon->seltags] >> (LENGTH(tags) - arg->i));
+	else
+		shifted.ui = (selmon->tagset[selmon->seltags] >> -arg->i)
+			| (selmon->tagset[selmon->seltags] << (LENGTH(tags) + arg->i));
+	view(&shifted);
+}
+
+void
 showhide(Client *c)
 {
 	if (!c)
@@ -1704,11 +1811,32 @@ spawn(const Arg *arg)
 	}
 }
 
+int
+statuswidth(char *s)
+{
+	/* colour escapes paint nothing, so they must not reserve width either */
+	char *p, *seg = s;
+	char ctmp;
+	int w = 0;
+
+	for (p = s; ; p++)
+		if (*p == '\0' || ((unsigned char)*p >= 1 && (unsigned char)*p <= LENGTH(colors))) {
+			ctmp = *p;
+			*p = '\0';
+			w += TEXTW(seg) - lrpad;
+			*p = ctmp;
+			if (!ctmp)
+				return w;
+			seg = p + 1;
+		}
+}
+
 void
 tag(const Arg *arg)
 {
 	if (selmon->sel && arg->ui & TAGMASK) {
 		selmon->sel->tags = arg->ui & TAGMASK;
+		savetags(selmon->sel);
 		focus(NULL);
 		arrange(selmon);
 	}
@@ -1783,6 +1911,7 @@ toggletag(const Arg *arg)
 	newtags = selmon->sel->tags ^ (arg->ui & TAGMASK);
 	if (newtags) {
 		selmon->sel->tags = newtags;
+		savetags(selmon->sel);
 		focus(NULL);
 		arrange(selmon);
 	}
@@ -1860,7 +1989,7 @@ updatebars(void)
 	XSetWindowAttributes wa = {
 		.override_redirect = True,
 		.background_pixmap = ParentRelative,
-		.event_mask = ButtonPressMask|ExposureMask
+		.event_mask = ButtonPressMask|ExposureMask|PointerMotionMask|LeaveWindowMask
 	};
 	XClassHint ch = {"dwm", "dwm"};
 	for (m = mons; m; m = m->next) {
@@ -2043,8 +2172,9 @@ updatesizehints(Client *c)
 void
 updatestatus(void)
 {
-	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext)))
-		strcpy(stext, "dwm-"VERSION);
+	if (!gettextprop(root, XA_WM_NAME, rawstext, sizeof(rawstext)))
+		strcpy(rawstext, "dwm-"VERSION);
+	setstext();
 	drawbar(selmon);
 }
 
