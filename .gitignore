@@ -1,0 +1,10 @@
+# artefakty budowania
+*.o
+dwm
+
+# pozostałości po nakładaniu łatek i edytorach
+*.orig
+*.rej
+*.bak
+*.bak-*
+*.diff
