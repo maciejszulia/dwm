@@ -51,7 +51,9 @@ by hand into the existing code.
 ## Constraints
 
 No new dependencies. Diff surface: dwm.c, config.h, config.def.h, docs/orders/ (this
-file), OMX-REPORT.md. English commits, no Co-Authored-By. Ponytail style.
+file), OMX-REPORT.md. English commits, no Co-Authored-By. Ponytail style at ultra
+intensity — smallest working diff; the Required outcome list is fixed scope, do not
+challenge it away.
 
 ## Definition of done
 

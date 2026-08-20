@@ -89,6 +89,9 @@ static const char *speechcmd[] = { "/home/ms/bin/speech-to-codex-record", "toggl
 static const char *termcmd[]  = { "st", NULL };
 /* left click anywhere on the status clears a blinking weather alert */
 static const char *weatherack[] = { "/home/ms/.local/bin/weather", "--ack", NULL };
+/* scroll on the status steps the same rotation, up = previous fact */
+static const char *weatherprev[] = { "/home/ms/.local/bin/weather", "--turn", "-1", NULL };
+static const char *weathernext[] = { "/home/ms/.local/bin/weather", "--turn", "1", NULL };
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
@@ -163,6 +166,8 @@ static const Button buttons[] = {
 	{ ClkWinTitle,          0,              Button2,        zoom,           {0} },
 	{ ClkStatusText,        0,              Button1,        spawn,          {.v = weatherack } },
 	{ ClkStatusText,        0,              Button2,        spawn,          {.v = termcmd } },
+	{ ClkStatusText,        0,              Button4,        spawn,          {.v = weatherprev } },
+	{ ClkStatusText,        0,              Button5,        spawn,          {.v = weathernext } },
 	{ ClkClientWin,         MODKEY,         Button1,        movemouse,      {0} },
 	{ ClkClientWin,         MODKEY,         Button2,        togglefloating, {0} },
 	{ ClkClientWin,         MODKEY,         Button3,        resizemouse,    {0} },
