@@ -65,6 +65,7 @@ static const Layout layouts[] = {
 
 /* helper for spawning shell commands in the pre dwm-5.0 fashion */
 #define SHCMD(cmd) { .v = (const char*[]){ "/bin/sh", "-c", cmd, NULL } }
+#define STATUSBAR "dwmblocks"
 
 /* commands */
 static char dmenumon[2] = "0"; /* component of dmenucmd, manipulated in spawn() */
@@ -87,11 +88,6 @@ static const char *cheatcmd[] = { "st", "-e", "/home/ms/.local/bin/sciaga", NULL
 static const char *omxviewcmd[] = { "st", "-e", "/home/ms/.local/bin/omx-podglad", NULL };
 static const char *speechcmd[] = { "/home/ms/bin/speech-to-codex-record", "toggle", NULL };
 static const char *termcmd[]  = { "st", NULL };
-/* left click anywhere on the status clears a blinking weather alert */
-static const char *weatherack[] = { "/home/ms/.local/bin/weather", "--ack", NULL };
-/* scroll on the status steps the same rotation, up = previous fact */
-static const char *weatherprev[] = { "/home/ms/.local/bin/weather", "--turn", "-1", NULL };
-static const char *weathernext[] = { "/home/ms/.local/bin/weather", "--turn", "1", NULL };
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
@@ -164,10 +160,15 @@ static const Button buttons[] = {
 	{ ClkLtSymbol,          0,              Button1,        setlayout,      {0} },
 	{ ClkLtSymbol,          0,              Button3,        setlayout,      {.v = &layouts[2]} },
 	{ ClkWinTitle,          0,              Button2,        zoom,           {0} },
-	{ ClkStatusText,        0,              Button1,        spawn,          {.v = weatherack } },
-	{ ClkStatusText,        0,              Button2,        spawn,          {.v = termcmd } },
-	{ ClkStatusText,        0,              Button4,        spawn,          {.v = weatherprev } },
-	{ ClkStatusText,        0,              Button5,        spawn,          {.v = weathernext } },
+	{ ClkStatusText,        0,              Button1,        sigstatusbar,   {.i = 1} },
+	{ ClkStatusText,        0,              Button2,        sigstatusbar,   {.i = 2} },
+	{ ClkStatusText,        0,              Button3,        sigstatusbar,   {.i = 3} },
+	{ ClkStatusText,        0,              Button4,        sigstatusbar,   {.i = 4} },
+	{ ClkStatusText,        0,              Button5,        sigstatusbar,   {.i = 5} },
+	{ ClkStatusText,        0,              6,              sigstatusbar,   {.i = 6} },
+	{ ClkStatusText,        0,              7,              sigstatusbar,   {.i = 7} },
+	{ ClkStatusText,        0,              8,              sigstatusbar,   {.i = 8} },
+	{ ClkStatusText,        0,              9,              sigstatusbar,   {.i = 9} },
 	{ ClkClientWin,         MODKEY,         Button1,        movemouse,      {0} },
 	{ ClkClientWin,         MODKEY,         Button2,        togglefloating, {0} },
 	{ ClkClientWin,         MODKEY,         Button3,        resizemouse,    {0} },

@@ -57,6 +57,7 @@
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
 #define STATUSSEP               '\037' /* dwmblocks: text before it shows on hover only */
+#define ISSTATUSSIG(c)          ((unsigned char)(c) > LENGTH(colors) && (unsigned char)(c) < STATUSSEP)
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
@@ -214,7 +215,9 @@ static void setup(void);
 static void seturgent(Client *c, int urg);
 static void shiftview(const Arg *arg);
 static void showhide(Client *c);
+static void sigstatusbar(const Arg *arg);
 static void spawn(const Arg *arg);
+static int statussignal(int x);
 static int statuswidth(char *s);
 static void tag(const Arg *arg);
 static void tagmon(const Arg *arg);
@@ -248,6 +251,7 @@ static void zoom(const Arg *arg);
 static const char broken[] = "broken";
 static char rawstext[512]; /* status text as published by dwmblocks */
 static char stext[512];    /* the variant currently drawn on the bar */
+static int statussig;
 static int statushover;
 static int screen;
 static int sw, sh;           /* X display screen geometry width, height */
@@ -461,8 +465,10 @@ buttonpress(XEvent *e)
 			arg.ui = 1 << i;
 		} else if (ev->x < x + TEXTW(selmon->ltsymbol))
 			click = ClkLtSymbol;
-		else if (ev->x > selmon->ww - statuswidth(stext) - 2)
+		else if (ev->x > selmon->ww - statuswidth(stext) - 2) {
 			click = ClkStatusText;
+			statussig = statussignal(ev->x);
+		}
 		else
 			click = ClkWinTitle;
 	} else if ((c = wintoclient(ev->window))) {
@@ -737,14 +743,15 @@ drawbar(Monitor *m)
 		xpos = m->ww - tw;
 		seg = stext;
 		for (p = stext; ; p++) {
-			if (*p == '\0' || ((unsigned char)*p >= 1 && (unsigned char)*p <= LENGTH(colors))) {
+			if (*p == '\0' || ((unsigned char)*p >= 1 && (unsigned char)*p <= LENGTH(colors)) || ISSTATUSSIG(*p)) {
 				ctmp = *p;
 				*p = '\0';
 				drw_text(drw, xpos, 0, ctmp == '\0' ? m->ww - xpos : TEXTW(seg) - lrpad, bh, 0, seg, 0);
 				xpos += TEXTW(seg) - lrpad;
 				*p = ctmp;
 				if (!ctmp) break;
-				drw_setscheme(drw, scheme[(unsigned char)*p - 1]);
+				if (!ISSTATUSSIG(ctmp))
+					drw_setscheme(drw, scheme[(unsigned char)ctmp - 1]);
 				seg = p + 1;
 			}
 		}
@@ -1790,6 +1797,21 @@ sigterm(int unused)
 }
 
 void
+sigstatusbar(const Arg *arg)
+{
+	char buf[32];
+	FILE *fp;
+	pid_t pid;
+	union sigval sv = {.sival_int = arg->i};
+
+	if (!statussig || !(fp = popen("pidof -s " STATUSBAR, "r")))
+		return;
+	if (fgets(buf, sizeof buf, fp) && (pid = strtol(buf, NULL, 10)) > 0)
+		sigqueue(pid, SIGRTMIN + statussig, sv);
+	pclose(fp);
+}
+
+void
 spawn(const Arg *arg)
 {
 	struct sigaction sa;
@@ -1812,15 +1834,37 @@ spawn(const Arg *arg)
 }
 
 int
+statussignal(int x)
+{
+	char *p, *seg = stext;
+	char ctmp;
+	int sig = 0;
+	int xpos = selmon->ww - statuswidth(stext) - 2;
+
+	for (p = stext; ; p++)
+		if (*p == '\0' || ((unsigned char)*p >= 1 && (unsigned char)*p <= LENGTH(colors)) || ISSTATUSSIG(*p)) {
+			ctmp = *p;
+			*p = '\0';
+			xpos += TEXTW(seg) - lrpad;
+			*p = ctmp;
+			if (x < xpos || !ctmp)
+				return sig;
+			if (ISSTATUSSIG(ctmp))
+				sig = sig == (unsigned char)ctmp ? 0 : (unsigned char)ctmp;
+			seg = p + 1;
+		}
+}
+
+int
 statuswidth(char *s)
 {
-	/* colour escapes paint nothing, so they must not reserve width either */
+	/* colour and signal bytes paint nothing, so they reserve no width */
 	char *p, *seg = s;
 	char ctmp;
 	int w = 0;
 
 	for (p = s; ; p++)
-		if (*p == '\0' || ((unsigned char)*p >= 1 && (unsigned char)*p <= LENGTH(colors))) {
+		if (*p == '\0' || ((unsigned char)*p >= 1 && (unsigned char)*p <= LENGTH(colors)) || ISSTATUSSIG(*p)) {
 			ctmp = *p;
 			*p = '\0';
 			w += TEXTW(seg) - lrpad;
