@@ -734,7 +734,11 @@ drawbar(Monitor *m)
 		return;
 
 	/* draw status first so it can be overdrawn by tags later */
-	if (m == selmon) { /* status is only drawn on selected monitor */
+	/* statusallmons: status is drawn on every monitor, not just the selected one */
+	/* ponytail: stext holds one global hover variant, so hovering a block on the
+	 * focused bar expands it on both. Cosmetic; a second plain-text buffer picked
+	 * by (m == selmon) would fix it if it ever gets annoying. */
+	{
 		char *p, *seg;
 		char ctmp;
 		int xpos;
@@ -1195,7 +1199,7 @@ motionnotify(XEvent *e)
 		if (over != statushover) {
 			statushover = over;
 			setstext();
-			drawbar(selmon);
+			drawbars();
 		}
 		return;
 	}
@@ -2219,7 +2223,7 @@ updatestatus(void)
 	if (!gettextprop(root, XA_WM_NAME, rawstext, sizeof(rawstext)))
 		strcpy(rawstext, "dwm-"VERSION);
 	setstext();
-	drawbar(selmon);
+	drawbars();
 }
 
 void
