@@ -99,6 +99,7 @@ struct Client {
 	Client *snext;
 	Monitor *mon;
 	Window win;
+	int ridx; /* list position saved before a restart */
 };
 
 typedef struct {
@@ -198,9 +199,11 @@ static void resize(Client *c, int x, int y, int w, int h, int interact);
 static void resizeclient(Client *c, int x, int y, int w, int h);
 static void resizemouse(const Arg *arg);
 static void restack(Monitor *m);
-static void restoretags(Client *c);
+static void restoremons(void);
+static void restorestate(Client *c);
 static void run(void);
-static void savetags(Client *c);
+static void savemons(void);
+static void savestate(Client *c);
 static void scan(void);
 static int sendevent(Client *c, Atom proto);
 static void sendmon(Client *c, Monitor *m);
@@ -279,8 +282,9 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[UnmapNotify] = unmapnotify
 };
 static Atom wmatom[WMLast], netatom[NetLast];
-static Atom dwmtags;
+static Atom dwmtags, dwmmons;
 static int restart = 0;
+static int restoring = 0; /* scan() after a restart */
 static int running = 1;
 static Cur *cursor[CurLast];
 static Clr **scheme;
@@ -425,8 +429,12 @@ arrangemon(Monitor *m)
 void
 attach(Client *c)
 {
-	c->next = c->mon->clients;
-	c->mon->clients = c;
+	Client **tc = &c->mon->clients;
+
+	if (restoring) /* keep the list order saved before the restart */
+		for (; *tc && (*tc)->ridx < c->ridx; tc = &(*tc)->next);
+	c->next = *tc;
+	*tc = c;
 }
 
 void
@@ -1145,8 +1153,7 @@ manage(Window w, XWindowAttributes *wa)
 		c->mon = selmon;
 		applyrules(c);
 	}
-	restoretags(c);
-	savetags(c);
+	restorestate(c);
 
 	if (c->x + WIDTH(c) > c->mon->wx + c->mon->ww)
 		c->x = c->mon->wx + c->mon->ww - WIDTH(c);
@@ -1489,22 +1496,82 @@ restack(Monitor *m)
 }
 
 void
-restoretags(Client *c)
+restoremons(void)
+{
+	unsigned long n, extra, i;
+	unsigned char *p = NULL;
+	long *v;
+	Atom real;
+	int format;
+	Monitor *m;
+	Client *c;
+
+	if (XGetWindowProperty(dpy, root, dwmmons, 0L, 1L + 11 * 64, False, XA_CARDINAL,
+			&real, &format, &n, &extra, &p) != Success || !p)
+		return;
+	v = (long *)p;
+	unfocus(selmon->sel, 0);
+	for (i = 1; i + 10 < n; i += 11) {
+		for (m = mons; m && m->num != v[i]; m = m->next);
+		if (!m) /* dock unplugged while restarting */
+			continue;
+		if (v[i + 1] & TAGMASK)
+			m->tagset[0] = v[i + 1] & TAGMASK;
+		if (v[i + 2] & TAGMASK)
+			m->tagset[1] = v[i + 2] & TAGMASK;
+		m->seltags = v[i + 3] & 1;
+		m->sellt = v[i + 4] & 1;
+		if (v[i + 5] >= 0 && v[i + 5] < LENGTH(layouts))
+			m->lt[0] = &layouts[v[i + 5]];
+		if (v[i + 6] >= 0 && v[i + 6] < LENGTH(layouts))
+			m->lt[1] = &layouts[v[i + 6]];
+		strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, sizeof m->ltsymbol);
+		if (v[i + 7])
+			memcpy(&m->mfact, &v[i + 7], sizeof(float));
+		m->nmaster = MAX(v[i + 8], 0);
+		if (m->showbar != (v[i + 9] != 0)) { /* same steps as togglebar() */
+			m->showbar = v[i + 9] != 0;
+			updatebarpos(m);
+			XMoveResizeWindow(dpy, m->barwin, m->wx, m->by, m->ww, bh);
+		}
+		if ((c = wintoclient(v[i + 10])) && c->mon == m)
+			m->sel = c;
+		if (v[0] == m->num)
+			selmon = m;
+	}
+	XFree(p);
+	/* ponytail: focus history (m->stack) is not saved, so Mod+Tab starts
+	 * fresh after a restart; a fifth per-client long with the stack
+	 * position would restore it. */
+	focus(selmon->sel);
+	arrange(NULL);
+}
+
+void
+restorestate(Client *c)
 {
 	unsigned long n, extra;
 	unsigned char *p = NULL;
+	long *v;
 	Atom real;
 	int format;
+	Monitor *m;
 
 	/* a dwm restart re-manages every live window: put it back where it was */
-	if (XGetWindowProperty(dpy, c->win, dwmtags, 0L, 1L, False, XA_CARDINAL,
-			&real, &format, &n, &extra, &p) != Success)
+	if (XGetWindowProperty(dpy, c->win, dwmtags, 0L, 4L, False, XA_CARDINAL,
+			&real, &format, &n, &extra, &p) != Success || !p)
 		return;
-	if (p) {
-		if (n == 1 && (*(long *)p & TAGMASK))
-			c->tags = *(long *)p & TAGMASK;
-		XFree(p);
+	v = (long *)p;
+	if (n >= 1 && (v[0] & TAGMASK))
+		c->tags = v[0] & TAGMASK;
+	if (n == 4) {
+		for (m = mons; m && m->num != v[1]; m = m->next);
+		if (m) /* a missing monitor (dock unplugged) keeps selmon */
+			c->mon = m;
+		c->isfloating = v[2] != 0;
+		c->ridx = v[3];
 	}
+	XFree(p);
 }
 
 void
@@ -1519,12 +1586,48 @@ run(void)
 }
 
 void
-savetags(Client *c)
+savemons(void)
 {
-	long tags = c->tags; /* format 32 properties are read as long by Xlib */
+	Monitor *m;
+	Client *c;
+	int n = 1;
+	long *v; /* format 32 properties are written as long by Xlib */
 
+	for (m = mons; m; m = m->next)
+		n += 11;
+	v = ecalloc(n, sizeof(long));
+	v[0] = selmon->num;
+	for (m = mons, n = 1; m; m = m->next, n += 11) {
+		v[n] = m->num;
+		v[n + 1] = m->tagset[0];
+		v[n + 2] = m->tagset[1];
+		v[n + 3] = m->seltags;
+		v[n + 4] = m->sellt;
+		v[n + 5] = m->lt[0] - layouts;
+		v[n + 6] = m->lt[1] - layouts;
+		memcpy(&v[n + 7], &m->mfact, sizeof(float)); /* raw bits: any decimal rounding drifts tile() by a pixel */
+		v[n + 8] = m->nmaster;
+		v[n + 9] = m->showbar;
+		v[n + 10] = m->sel ? m->sel->win : None;
+		for (c = m->clients; c; c = c->next)
+			savestate(c);
+	}
+	XChangeProperty(dpy, root, dwmmons, XA_CARDINAL, 32,
+		PropModeReplace, (unsigned char *)v, n);
+	free(v);
+	XSync(dpy, False); /* execvp() follows; an unflushed buffer would lose it all */
+}
+
+void
+savestate(Client *c)
+{
+	long v[4] = { c->tags, c->mon->num, c->isfloating, 0 };
+	Client *i;
+
+	for (i = c->mon->clients; i && i != c; i = i->next)
+		v[3]++;
 	XChangeProperty(dpy, c->win, dwmtags, XA_CARDINAL, 32,
-		PropModeReplace, (unsigned char *)&tags, 1);
+		PropModeReplace, (unsigned char *)v, 4);
 }
 
 void
@@ -1730,6 +1833,7 @@ setup(void)
 	/* init atoms */
 	utf8string = XInternAtom(dpy, "UTF8_STRING", False);
 	dwmtags = XInternAtom(dpy, "_DWM_TAGS", False);
+	dwmmons = XInternAtom(dpy, "_DWM_MONS", False);
 	wmatom[WMProtocols] = XInternAtom(dpy, "WM_PROTOCOLS", False);
 	wmatom[WMDelete] = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
 	wmatom[WMState] = XInternAtom(dpy, "WM_STATE", False);
@@ -1921,7 +2025,6 @@ tag(const Arg *arg)
 {
 	if (selmon->sel && arg->ui & TAGMASK) {
 		selmon->sel->tags = arg->ui & TAGMASK;
-		savetags(selmon->sel);
 		focus(NULL);
 		arrange(selmon);
 	}
@@ -1996,7 +2099,6 @@ toggletag(const Arg *arg)
 	newtags = selmon->sel->tags ^ (arg->ui & TAGMASK);
 	if (newtags) {
 		selmon->sel->tags = newtags;
-		savetags(selmon->sel);
 		focus(NULL);
 		arrange(selmon);
 	}
@@ -2410,9 +2512,15 @@ main(int argc, char *argv[])
 	if (pledge("stdio rpath proc exec", NULL) == -1)
 		die("pledge");
 #endif /* __OpenBSD__ */
+	restoring = 1;
 	scan();
+	restoring = 0;
+	restoremons();
 	run();
-	if(restart) execvp(argv[0], argv);
+	if (restart) {
+		savemons(); /* here, not in sighup(): Xlib calls inside a signal handler deadlock */
+		execvp(argv[0], argv);
+	}
 	cleanup();
 	XCloseDisplay(dpy);
 	return EXIT_SUCCESS;
