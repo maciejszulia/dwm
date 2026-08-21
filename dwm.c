@@ -37,6 +37,8 @@
 #include <X11/Xlib.h>
 #include <X11/Xproto.h>
 #include <X11/Xutil.h>
+#include <X11/extensions/Xfixes.h>
+#include <X11/extensions/XInput2.h>
 #ifdef XINERAMA
 #include <X11/extensions/Xinerama.h>
 #endif /* XINERAMA */
@@ -168,7 +170,7 @@ static void drawbar(Monitor *m);
 static void drawbars(void);
 static void enternotify(XEvent *e);
 static void expose(XEvent *e);
-static int fencepointer(int x, int y, unsigned int state);
+static void genericevent(XEvent *e);
 static void focus(Client *c);
 static void focusin(XEvent *e);
 static void focuscol(const Arg *arg);
@@ -235,6 +237,8 @@ static void unfocus(Client *c, int setfocus);
 static void unmanage(Client *c, int destroyed);
 static void unmapnotify(XEvent *e);
 static void updatebarpos(Monitor *m);
+static void setupbarriers(void);
+static void updatebarriers(void);
 static void updatebars(void);
 static void updateclientlist(void);
 static int updategeom(void);
@@ -272,6 +276,7 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[DestroyNotify] = destroynotify,
 	[EnterNotify] = enternotify,
 	[Expose] = expose,
+	[GenericEvent] = genericevent,
 	[FocusIn] = focusin,
 	[KeyPress] = keypress,
 	[LeaveNotify] = leavenotify,
@@ -283,6 +288,8 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 };
 static Atom wmatom[WMLast], netatom[NetLast];
 static Atom dwmtags, dwmmons;
+static PointerBarrier *barriers;
+static int nbarriers, xi2opcode;
 static int restart = 0;
 static int restoring = 0; /* scan() after a restart */
 static int running = 1;
@@ -820,8 +827,6 @@ enternotify(XEvent *e)
 	Monitor *m;
 	XCrossingEvent *ev = &e->xcrossing;
 
-	if (fencepointer(ev->x_root, ev->y_root, ev->state))
-		return;
 	if ((ev->mode != NotifyNormal || ev->detail == NotifyInferior) && ev->window != root)
 		return;
 	c = wintoclient(ev->window);
@@ -844,19 +849,25 @@ expose(XEvent *e)
 		drawbar(m);
 }
 
-/* keep the pointer on selmon unless MODKEY is held; 1 = warped back.
- * Clamp to the monitor rect, not recttomon(): that one uses the window
- * area, so the other monitor's bar strip would count as selmon. */
-int
-fencepointer(int x, int y, unsigned int state)
+/* the pointer is fenced in by X11 barriers; holding MODKEY lets it through */
+void
+genericevent(XEvent *e)
 {
-	int cx = MAX(selmon->mx, MIN(x, selmon->mx + selmon->mw - 1));
-	int cy = MAX(selmon->my, MIN(y, selmon->my + selmon->mh - 1));
+	XGenericEventCookie *cookie = &e->xcookie;
+	XIBarrierEvent *b;
+	Window dw;
+	int di;
+	unsigned int mask;
 
-	if ((cx == x && cy == y) || (state & MODKEY))
-		return 0;
-	XWarpPointer(dpy, None, root, 0, 0, 0, 0, cx, cy);
-	return 1;
+	if (cookie->extension != xi2opcode || !XGetEventData(dpy, cookie))
+		return;
+	b = cookie->data;
+	/* the barrier event carries no modifier state, so ask for it */
+	if (cookie->evtype == XI_BarrierHit
+	&& XQueryPointer(dpy, root, &dw, &dw, &di, &di, &di, &di, &mask)
+	&& (mask & MODKEY))
+		XIBarrierReleasePointer(dpy, b->deviceid, b->barrier, b->eventid);
+	XFreeEventData(dpy, cookie);
 }
 
 void
@@ -1125,7 +1136,7 @@ leavenotify(XEvent *e)
 	if (e->xcrossing.window == selmon->barwin && statushover) {
 		statushover = 0;
 		setstext();
-		drawbar(selmon);
+		drawbars();
 	}
 }
 
@@ -1234,8 +1245,6 @@ motionnotify(XEvent *e)
 	Monitor *m;
 	XMotionEvent *ev = &e->xmotion;
 
-	if (fencepointer(ev->x_root, ev->y_root, ev->state))
-		return;
 	if (ev->window == selmon->barwin) {
 		/* same status region test as buttonpress()/drawbar() */
 		int over = ev->x > selmon->ww - statuswidth(stext) - 2;
@@ -1534,16 +1543,15 @@ restoremons(void)
 			updatebarpos(m);
 			XMoveResizeWindow(dpy, m->barwin, m->wx, m->by, m->ww, bh);
 		}
-		if ((c = wintoclient(v[i + 10])) && c->mon == m)
-			m->sel = c;
+		if ((c = wintoclient(v[i + 10])) && c->mon == m) {
+			detachstack(c); /* focus(NULL) reads m->stack, not m->sel */
+			attachstack(c);
+		}
 		if (v[0] == m->num)
 			selmon = m;
 	}
 	XFree(p);
-	/* ponytail: focus history (m->stack) is not saved, so Mod+Tab starts
-	 * fresh after a restart; a fifth per-client long with the stack
-	 * position would restore it. */
-	focus(selmon->sel);
+	focus(selmon->stack);
 	arrange(NULL);
 }
 
@@ -1829,6 +1837,7 @@ setup(void)
 		die("no fonts could be loaded.");
 	lrpad = drw->fonts->h;
 	bh = drw->fonts->h + barheightpx;
+	setupbarriers(); /* before updategeom(): it is what creates the barriers */
 	updategeom();
 	/* init atoms */
 	utf8string = XInternAtom(dpy, "UTF8_STRING", False);
@@ -2169,6 +2178,56 @@ unmapnotify(XEvent *e)
 	}
 }
 
+/* pointer barriers need XFixes 5; the release-on-MODKEY path needs XInput 2.3 */
+void
+setupbarriers(void)
+{
+	XIEventMask em;
+	unsigned char mask[XIMaskLen(XI_LASTEVENT)] = { 0 };
+	int major = 5, minor = 0, ev, err;
+
+	XFixesQueryVersion(dpy, &major, &minor); /* negotiates: barriers need 5 */
+	major = 2; minor = 3;
+	if (!XQueryExtension(dpy, "XInputExtension", &xi2opcode, &ev, &err)
+	|| XIQueryVersion(dpy, &major, &minor) != Success)
+		return; /* no XI2: no barriers, dwm still runs */
+	XISetMask(mask, XI_BarrierHit);
+	em.deviceid = XIAllMasterDevices;
+	em.mask_len = sizeof mask;
+	em.mask = mask;
+	XISelectEvents(dpy, root, &em, 1);
+}
+
+/* box each monitor in, minus the edges the screen border already blocks:
+ * a barrier there would answer every corner flick with an XQueryPointer */
+void
+updatebarriers(void)
+{
+	Monitor *m;
+	int i, n = 0;
+
+	for (i = 0; i < nbarriers; i++)
+		XFixesDestroyPointerBarrier(dpy, barriers[i]);
+	free(barriers);
+	for (m = mons; m; m = m->next)
+		n += 4;
+	barriers = ecalloc(n, sizeof(PointerBarrier));
+	for (m = mons, nbarriers = 0; m && xi2opcode; m = m->next) {
+		if (m->mx > 0)
+			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
+				m->mx, m->my, m->mx, m->my + m->mh, 0, 0, NULL);
+		if (m->mx + m->mw < sw)
+			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
+				m->mx + m->mw, m->my, m->mx + m->mw, m->my + m->mh, 0, 0, NULL);
+		if (m->my > 0)
+			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
+				m->mx, m->my, m->mx + m->mw, m->my, 0, 0, NULL);
+		if (m->my + m->mh < sh)
+			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
+				m->mx, m->my + m->mh, m->mx + m->mw, m->my + m->mh, 0, 0, NULL);
+	}
+}
+
 void
 updatebars(void)
 {
@@ -2292,6 +2351,7 @@ updategeom(void)
 	if (dirty) {
 		selmon = mons;
 		selmon = wintomon(root);
+		updatebarriers();
 	}
 	return dirty;
 }
