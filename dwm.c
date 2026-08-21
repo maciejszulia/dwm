@@ -170,6 +170,7 @@ static void expose(XEvent *e);
 static int fencepointer(int x, int y, unsigned int state);
 static void focus(Client *c);
 static void focusin(XEvent *e);
+static void focuscol(const Arg *arg);
 static void focusmon(const Arg *arg);
 static void focusstack(const Arg *arg);
 static Atom getatomprop(Client *c, Atom prop);
@@ -883,6 +884,21 @@ focusin(XEvent *e)
 
 	if (selmon->sel && ev->window != selmon->sel->win)
 		setfocus(selmon->sel);
+}
+
+void
+focuscol(const Arg *arg)
+{
+	/* top window of the master (0) or stack (1) column */
+	Client *c = nexttiled(selmon->clients);
+	int i;
+
+	for (i = arg->i ? selmon->nmaster : 0; c && i > 0; i--)
+		c = nexttiled(c->next);
+	if (c) {
+		focus(c);
+		restack(selmon);
+	}
 }
 
 void
