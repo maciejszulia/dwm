@@ -167,6 +167,7 @@ static void drawbar(Monitor *m);
 static void drawbars(void);
 static void enternotify(XEvent *e);
 static void expose(XEvent *e);
+static int fencepointer(int x, int y, unsigned int state);
 static void focus(Client *c);
 static void focusin(XEvent *e);
 static void focusmon(const Arg *arg);
@@ -810,6 +811,8 @@ enternotify(XEvent *e)
 	Monitor *m;
 	XCrossingEvent *ev = &e->xcrossing;
 
+	if (fencepointer(ev->x_root, ev->y_root, ev->state))
+		return;
 	if ((ev->mode != NotifyNormal || ev->detail == NotifyInferior) && ev->window != root)
 		return;
 	c = wintoclient(ev->window);
@@ -830,6 +833,21 @@ expose(XEvent *e)
 
 	if (ev->count == 0 && (m = wintomon(ev->window)))
 		drawbar(m);
+}
+
+/* keep the pointer on selmon unless MODKEY is held; 1 = warped back.
+ * Clamp to the monitor rect, not recttomon(): that one uses the window
+ * area, so the other monitor's bar strip would count as selmon. */
+int
+fencepointer(int x, int y, unsigned int state)
+{
+	int cx = MAX(selmon->mx, MIN(x, selmon->mx + selmon->mw - 1));
+	int cy = MAX(selmon->my, MIN(y, selmon->my + selmon->mh - 1));
+
+	if ((cx == x && cy == y) || (state & MODKEY))
+		return 0;
+	XWarpPointer(dpy, None, root, 0, 0, 0, 0, cx, cy);
+	return 1;
 }
 
 void
@@ -879,6 +897,7 @@ focusmon(const Arg *arg)
 	unfocus(selmon->sel, 0);
 	selmon = m;
 	focus(NULL);
+	XWarpPointer(dpy, None, root, 0, 0, 0, 0, m->mx + m->mw / 2, m->my + m->mh / 2);
 }
 
 void
@@ -1192,6 +1211,8 @@ motionnotify(XEvent *e)
 	Monitor *m;
 	XMotionEvent *ev = &e->xmotion;
 
+	if (fencepointer(ev->x_root, ev->y_root, ev->state))
+		return;
 	if (ev->window == selmon->barwin) {
 		/* same status region test as buttonpress()/drawbar() */
 		int over = ev->x > selmon->ww - statuswidth(stext) - 2;
