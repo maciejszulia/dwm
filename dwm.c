@@ -1288,6 +1288,10 @@ movemouse(const Arg *arg)
 	if (!getrootptr(&x, &y))
 		return;
 	do {
+		/* GenericEvent has no mask bit, so XMaskEvent never yields a
+		 * barrier hit: without this a MODKEY drag cannot leave the monitor */
+		while (XCheckTypedEvent(dpy, GenericEvent, &ev))
+			genericevent(&ev);
 		XMaskEvent(dpy, MOUSEMASK|ExposureMask|SubstructureRedirectMask, &ev);
 		switch(ev.type) {
 		case ConfigureRequest:
@@ -1443,6 +1447,10 @@ resizemouse(const Arg *arg)
 		return;
 	XWarpPointer(dpy, None, c->win, 0, 0, 0, 0, c->w + c->bw - 1, c->h + c->bw - 1);
 	do {
+		/* GenericEvent has no mask bit, so XMaskEvent never yields a
+		 * barrier hit: without this a MODKEY drag cannot leave the monitor */
+		while (XCheckTypedEvent(dpy, GenericEvent, &ev))
+			genericevent(&ev);
 		XMaskEvent(dpy, MOUSEMASK|ExposureMask|SubstructureRedirectMask, &ev);
 		switch(ev.type) {
 		case ConfigureRequest:
@@ -2184,13 +2192,18 @@ setupbarriers(void)
 {
 	XIEventMask em;
 	unsigned char mask[XIMaskLen(XI_LASTEVENT)] = { 0 };
-	int major = 5, minor = 0, ev, err;
+	int major, minor, ev, err;
 
-	XFixesQueryVersion(dpy, &major, &minor); /* negotiates: barriers need 5 */
+	/* both queries are in/out: the server may hand back an older version */
+	if (XFixesQueryVersion(dpy, &major, &minor) != True || major < 5)
+		return;
 	major = 2; minor = 3;
 	if (!XQueryExtension(dpy, "XInputExtension", &xi2opcode, &ev, &err)
-	|| XIQueryVersion(dpy, &major, &minor) != Success)
-		return; /* no XI2: no barriers, dwm still runs */
+	|| XIQueryVersion(dpy, &major, &minor) != Success
+	|| major * 10 + minor < 23) {
+		xi2opcode = 0; /* no XI_BarrierHit: no barriers, dwm runs unfenced */
+		return;
+	}
 	XISetMask(mask, XI_BarrierHit);
 	em.deviceid = XIAllMasterDevices;
 	em.mask_len = sizeof mask;
@@ -2215,16 +2228,16 @@ updatebarriers(void)
 	for (m = mons, nbarriers = 0; m && xi2opcode; m = m->next) {
 		if (m->mx > 0)
 			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
-				m->mx, m->my, m->mx, m->my + m->mh, 0, 0, NULL);
+				m->mx, m->my, m->mx, m->my + m->mh, BarrierPositiveX, 0, NULL);
 		if (m->mx + m->mw < sw)
 			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
-				m->mx + m->mw, m->my, m->mx + m->mw, m->my + m->mh, 0, 0, NULL);
+				m->mx + m->mw, m->my, m->mx + m->mw, m->my + m->mh, BarrierNegativeX, 0, NULL);
 		if (m->my > 0)
 			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
-				m->mx, m->my, m->mx + m->mw, m->my, 0, 0, NULL);
+				m->mx, m->my, m->mx + m->mw, m->my, BarrierPositiveY, 0, NULL);
 		if (m->my + m->mh < sh)
 			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
-				m->mx, m->my + m->mh, m->mx + m->mw, m->my + m->mh, 0, 0, NULL);
+				m->mx, m->my + m->mh, m->mx + m->mw, m->my + m->mh, BarrierNegativeY, 0, NULL);
 	}
 }
 
@@ -2322,9 +2335,9 @@ updategeom(void)
 			}
 		/* removed monitors if n > nn */
 		for (i = nn; i < n; i++) {
+			dirty = 1;
 			for (m = mons; m && m->next; m = m->next);
 			while ((c = m->clients)) {
-				dirty = 1;
 				m->clients = c->next;
 				detachstack(c);
 				c->mon = mons;
@@ -2521,7 +2534,8 @@ xerror(Display *dpy, XErrorEvent *ee)
 	|| (ee->request_code == X_ConfigureWindow && ee->error_code == BadMatch)
 	|| (ee->request_code == X_GrabButton && ee->error_code == BadAccess)
 	|| (ee->request_code == X_GrabKey && ee->error_code == BadAccess)
-	|| (ee->request_code == X_CopyArea && ee->error_code == BadDrawable))
+	|| (ee->request_code == X_CopyArea && ee->error_code == BadDrawable)
+	|| (ee->request_code == xi2opcode && ee->error_code == BadValue))
 		return 0;
 	fprintf(stderr, "dwm: fatal error: request code=%d, error code=%d\n",
 		ee->request_code, ee->error_code);
