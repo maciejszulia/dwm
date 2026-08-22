@@ -2212,8 +2212,13 @@ setupbarriers(void)
 	XISelectEvents(dpy, root, &em, 1);
 }
 
-/* box each monitor in, minus the edges the screen border already blocks:
- * a barrier there would answer every corner flick with an XQueryPointer */
+/* Box each monitor in, minus the edges the screen border already blocks: a
+ * barrier there would answer every corner flick with an XQueryPointer.
+ * directions = 0 blocks both ways. Directional masks look tempting - each
+ * edge only has to stop outward motion - but two monitors sharing an edge
+ * put two collinear barriers there, Xorg picks one barrier per motion, and
+ * for a diagonal it picks the one that lets the pointer through. Measured:
+ * masks 2/8 and 7/13 both leak diagonals, 0/0 does not. */
 void
 updatebarriers(void)
 {
@@ -2229,16 +2234,16 @@ updatebarriers(void)
 	for (m = mons, nbarriers = 0; m && xi2opcode; m = m->next) {
 		if (m->mx > 0)
 			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
-				m->mx, m->my, m->mx, m->my + m->mh, BarrierPositiveX, 0, NULL);
+				m->mx, m->my, m->mx, m->my + m->mh, 0, 0, NULL);
 		if (m->mx + m->mw < sw)
 			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
-				m->mx + m->mw, m->my, m->mx + m->mw, m->my + m->mh, BarrierNegativeX, 0, NULL);
+				m->mx + m->mw, m->my, m->mx + m->mw, m->my + m->mh, 0, 0, NULL);
 		if (m->my > 0)
 			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
-				m->mx, m->my, m->mx + m->mw, m->my, BarrierPositiveY, 0, NULL);
+				m->mx, m->my, m->mx + m->mw, m->my, 0, 0, NULL);
 		if (m->my + m->mh < sh)
 			barriers[nbarriers++] = XFixesCreatePointerBarrier(dpy, root,
-				m->mx, m->my + m->mh, m->mx + m->mw, m->my + m->mh, BarrierNegativeY, 0, NULL);
+				m->mx, m->my + m->mh, m->mx + m->mw, m->my + m->mh, 0, 0, NULL);
 	}
 }
 
