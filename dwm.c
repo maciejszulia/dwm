@@ -1528,10 +1528,16 @@ restoremons(void)
 			XA_CARDINAL, &real, &format, &n, &extra, &p) != Success || !p)
 		return;
 	v = (long *)p;
+	for (i = 0, m = mons; m; m = m->next)
+		i++;
+	if (n != 2 + MONFIELDS * i) { /* saved by another build: garbage, not state */
+		XFree(p);
+		return;
+	}
 	unfocus(selmon->sel, 0);
 	/* m->num is the position in mons (updategeom numbers 0..n-1), so walking
 	 * both in step is the same match, minus a field and a search */
-	for (i = 2, m = mons; m && i + MONFIELDS - 1 < n; i += MONFIELDS, m = m->next) {
+	for (i = 2, m = mons; m; i += MONFIELDS, m = m->next) {
 		if (v[i] & TAGMASK)
 			m->tagset[0] = v[i] & TAGMASK;
 		if (v[i + 1] & TAGMASK)
