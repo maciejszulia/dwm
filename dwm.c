@@ -56,6 +56,7 @@
 #define MOUSEMASK               (BUTTONMASK|PointerMotionMask)
 #define WIDTH(X)                ((X)->w + 2 * (X)->bw)
 #define HEIGHT(X)               ((X)->h + 2 * (X)->bw)
+#define MONFIELDS               7 /* longs saved per monitor by savemons() */
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
 #define STATUSSEP               '\037' /* dwmblocks: text before it shows on hover only */
@@ -205,7 +206,7 @@ static void restoremons(void);
 static void restorestate(Client *c);
 static void run(void);
 static void savemons(void);
-static void savestate(Client *c);
+static void savestate(Client *c, int idx);
 static void scan(void);
 static int sendevent(Client *c, Atom proto);
 static void sendmon(Client *c, Monitor *m);
@@ -1523,42 +1524,40 @@ restoremons(void)
 	Monitor *m;
 	Client *c;
 
-	if (XGetWindowProperty(dpy, root, dwmmons, 0L, 1L + 11 * 64, False, XA_CARDINAL,
-			&real, &format, &n, &extra, &p) != Success || !p)
+	if (XGetWindowProperty(dpy, root, dwmmons, 0L, 2L + MONFIELDS * 64, False,
+			XA_CARDINAL, &real, &format, &n, &extra, &p) != Success || !p)
 		return;
 	v = (long *)p;
 	unfocus(selmon->sel, 0);
-	for (i = 1; i + 10 < n; i += 11) {
-		for (m = mons; m && m->num != v[i]; m = m->next);
-		if (!m) /* dock unplugged while restarting */
-			continue;
+	/* m->num is the position in mons (updategeom numbers 0..n-1), so walking
+	 * both in step is the same match, minus a field and a search */
+	for (i = 2, m = mons; m && i + MONFIELDS - 1 < n; i += MONFIELDS, m = m->next) {
+		if (v[i] & TAGMASK)
+			m->tagset[0] = v[i] & TAGMASK;
 		if (v[i + 1] & TAGMASK)
-			m->tagset[0] = v[i + 1] & TAGMASK;
-		if (v[i + 2] & TAGMASK)
-			m->tagset[1] = v[i + 2] & TAGMASK;
-		m->seltags = v[i + 3] & 1;
-		m->sellt = v[i + 4] & 1;
-		if (v[i + 5] >= 0 && v[i + 5] < LENGTH(layouts))
-			m->lt[0] = &layouts[v[i + 5]];
-		if (v[i + 6] >= 0 && v[i + 6] < LENGTH(layouts))
-			m->lt[1] = &layouts[v[i + 6]];
-		strncpy(m->ltsymbol, m->lt[m->sellt]->symbol, sizeof m->ltsymbol);
-		if (v[i + 7])
-			memcpy(&m->mfact, &v[i + 7], sizeof(float));
-		m->nmaster = MAX(v[i + 8], 0);
-		if (m->showbar != (v[i + 9] != 0)) { /* same steps as togglebar() */
-			m->showbar = v[i + 9] != 0;
+			m->tagset[1] = v[i + 1] & TAGMASK;
+		if (v[i + 2] >= 0 && v[i + 2] < LENGTH(layouts))
+			m->lt[0] = &layouts[v[i + 2]];
+		if (v[i + 3] >= 0 && v[i + 3] < LENGTH(layouts))
+			m->lt[1] = &layouts[v[i + 3]];
+		strncpy(m->ltsymbol, m->lt[0]->symbol, sizeof m->ltsymbol);
+		if (v[i + 4])
+			memcpy(&m->mfact, &v[i + 4], sizeof(float));
+		m->nmaster = MAX(v[i + 5], 0);
+		if (m->showbar != (v[i + 6] != 0)) { /* same steps as togglebar() */
+			m->showbar = v[i + 6] != 0;
 			updatebarpos(m);
 			XMoveResizeWindow(dpy, m->barwin, m->wx, m->by, m->ww, bh);
 		}
-		if ((c = wintoclient(v[i + 10])) && c->mon == m) {
-			detachstack(c); /* focus(NULL) reads m->stack, not m->sel */
-			attachstack(c);
-		}
-		if (v[0] == m->num)
+		if (m->num == v[0])
 			selmon = m;
 	}
-	XFree(p);
+	if ((c = wintoclient(v[1])) && c->mon == selmon) {
+		detachstack(c); /* focus() reads the stack, and m->sel on any other
+				 * monitor is overwritten the first time you go there */
+		attachstack(c);
+	}
+	XFree(p); /* v points into p */
 	focus(selmon->stack);
 	arrange(NULL);
 }
@@ -1606,27 +1605,26 @@ savemons(void)
 {
 	Monitor *m;
 	Client *c;
-	int n = 1;
+	int n = 2, i;
 	long *v; /* format 32 properties are written as long by Xlib */
 
 	for (m = mons; m; m = m->next)
-		n += 11;
+		n += MONFIELDS;
 	v = ecalloc(n, sizeof(long));
 	v[0] = selmon->num;
-	for (m = mons, n = 1; m; m = m->next, n += 11) {
-		v[n] = m->num;
-		v[n + 1] = m->tagset[0];
-		v[n + 2] = m->tagset[1];
-		v[n + 3] = m->seltags;
-		v[n + 4] = m->sellt;
-		v[n + 5] = m->lt[0] - layouts;
-		v[n + 6] = m->lt[1] - layouts;
-		memcpy(&v[n + 7], &m->mfact, sizeof(float)); /* raw bits: any decimal rounding drifts tile() by a pixel */
-		v[n + 8] = m->nmaster;
-		v[n + 9] = m->showbar;
-		v[n + 10] = m->sel ? m->sel->win : None;
-		for (c = m->clients; c; c = c->next)
-			savestate(c);
+	v[1] = selmon->sel ? selmon->sel->win : None;
+	/* seltags and sellt are plain 0/1 indices: store the selected slot first
+	 * and both restore into slot 0, which is where createmon() leaves them */
+	for (m = mons, n = 2; m; m = m->next, n += MONFIELDS) {
+		v[n] = m->tagset[m->seltags];
+		v[n + 1] = m->tagset[!m->seltags];
+		v[n + 2] = m->lt[m->sellt] - layouts;
+		v[n + 3] = m->lt[!m->sellt] - layouts;
+		memcpy(&v[n + 4], &m->mfact, sizeof(float)); /* raw bits: any decimal rounding drifts tile() by a pixel */
+		v[n + 5] = m->nmaster;
+		v[n + 6] = m->showbar;
+		for (c = m->clients, i = 0; c; c = c->next)
+			savestate(c, i++);
 	}
 	XChangeProperty(dpy, root, dwmmons, XA_CARDINAL, 32,
 		PropModeReplace, (unsigned char *)v, n);
@@ -1635,13 +1633,10 @@ savemons(void)
 }
 
 void
-savestate(Client *c)
+savestate(Client *c, int idx)
 {
-	long v[4] = { c->tags, c->mon->num, c->isfloating, 0 };
-	Client *i;
+	long v[4] = { c->tags, c->mon->num, c->isfloating, idx };
 
-	for (i = c->mon->clients; i && i != c; i = i->next)
-		v[3]++;
 	XChangeProperty(dpy, c->win, dwmtags, XA_CARDINAL, 32,
 		PropModeReplace, (unsigned char *)v, 4);
 }
