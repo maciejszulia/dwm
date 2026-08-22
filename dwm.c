@@ -727,16 +727,15 @@ detachstack(Client *c)
 Monitor *
 dirtomon(int dir)
 {
-	Monitor *m = NULL;
+	Monitor *m, *t = selmon;
 
-	if (dir > 0) {
-		if (!(m = selmon->next))
-			m = mons;
-	} else if (selmon == mons)
-		for (m = mons; m->next; m = m->next);
-	else
-		for (m = mons; m->next != selmon; m = m->next);
-	return m;
+	/* nearest monitor that way, or selmon when there is none: cycling would
+	 * send Mod+Up from the upper screen down to the lower one */
+	for (m = mons; m; m = m->next)
+		if (dir * (m->mx + m->my - selmon->mx - selmon->my) > 0
+		&& (t == selmon || dir * (m->mx + m->my - t->mx - t->my) < 0))
+			t = m;
+	return t;
 }
 
 void
