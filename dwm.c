@@ -1961,15 +1961,30 @@ sigterm(int unused)
 void
 sigstatusbar(const Arg *arg)
 {
+	static pid_t statuspid = 0;
 	char buf[32];
 	FILE *fp;
-	pid_t pid;
 	union sigval sv = {.sival_int = arg->i};
 
-	if (!statussig || !(fp = popen("pidof -s " STATUSBAR, "r")))
+	if (!statussig)
 		return;
-	if (fgets(buf, sizeof buf, fp) && (pid = strtol(buf, NULL, 10)) > 0)
-		sigqueue(pid, SIGRTMIN + statussig, sv);
+	/* a wheel tick must not cost a fork, and a recycled pid must not get the signal */
+	if (statuspid > 0) {
+		snprintf(buf, sizeof buf, "/proc/%d/comm", statuspid);
+		if ((fp = fopen(buf, "r"))) {
+			int mine = fgets(buf, sizeof buf, fp) && !strcmp(buf, STATUSBAR "\n");
+			fclose(fp);
+			if (mine) {
+				sigqueue(statuspid, SIGRTMIN + statussig, sv);
+				return;
+			}
+		}
+		statuspid = 0;
+	}
+	if (!(fp = popen("pidof -s " STATUSBAR, "r")))
+		return;
+	if (fgets(buf, sizeof buf, fp) && (statuspid = strtol(buf, NULL, 10)) > 0)
+		sigqueue(statuspid, SIGRTMIN + statussig, sv);
 	pclose(fp);
 }
 
