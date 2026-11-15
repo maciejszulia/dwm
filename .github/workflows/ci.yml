@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install the X11 development libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libx11-dev libxft-dev libxinerama-dev libxfixes-dev libxi-dev
+      - name: Build with the tracked config.h
+        run: make
+      - name: Build with config.def.h
+        run: sh tests/build-default.sh
