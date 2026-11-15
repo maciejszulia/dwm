@@ -15,7 +15,7 @@ local status-bar integration and desktop controls.
 | Status bar | Colour controls, hover expansion at byte `0x1f`, and per-block mouse buttons sent to `dwmblocks` using queued real-time signals. Hit testing uses the displayed text. |
 | Workspace controls | The tracked `config.h` selects Super, 18 tags, column focus and tag cycling. |
 | Desktop behaviour | Window state saved for a dwm restart; monitor pointer barriers when XFixes 5 and XInput 2.3 are available. |
-| Local bindings | Audio, brightness, screenshots and other workstation commands in `config.h`. Some point to `/home/ms` helpers outside this repository. |
+| Local bindings | Audio, brightness, screenshots and other workstation commands in `config.h`. Some point to `~` helpers outside this repository. |
 
 ## Build and check
 
@@ -43,8 +43,8 @@ page to the selected prefix; changing an existing desktop session is a separate 
 
 An X session can start dwm with `exec dwm` in `.xinitrc`. Start one status producer
 separately: this checkout is paired with
-[dwmblocks](https://gitlab.com/maciejszulia/dwmblocks), whose optional helpers are
-in [dwm-bar-scripts](https://gitlab.com/maciejszulia/dwm-bar-scripts).
+[dwmblocks](https://github.com/maciejszulia/dwmblocks), whose optional helpers are
+in [dwm-bar-scripts](https://github.com/maciejszulia/dwm-bar-scripts).
 Click routing also requires `pidof` and Linux `/proc`. A successful build does
 not verify monitor layout, installed helpers or interaction in a live X session.
 
