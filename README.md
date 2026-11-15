@@ -1,8 +1,12 @@
 # dwm: local X11 window-manager fork
 
+[Polski](README.pl.md)
+
 A configured fork of suckless dwm 6.8 for a Linux workstation. The upstream
 window manager provides tiling, floating and monocle layouts; this checkout adds
 local status-bar integration and desktop controls.
+
+![Four repositories make one desktop. Scripts feed dwmblocks, dwmblocks writes the status text, dwm draws it and sends each click back as a signal; st is the terminal.](docs/diagrams/desktop-stack.svg)
 
 ## What is in this fork
 
